@@ -71,6 +71,9 @@ final class ServerCallImpl<ReqT, RespT> extends ServerCall<ReqT, RespT> {
   private volatile boolean cancelled;
   private boolean sendHeadersCalled;
   private boolean closeCalled;
+  // Whether the application closed the call with an OK status. Only read after the transport
+  // reports the stream closed with OK, which happens-after the application's close().
+  private boolean closedWithOk;
   private Compressor compressor;
   private boolean messageSent;
 
@@ -216,18 +219,15 @@ final class ServerCallImpl<ReqT, RespT> extends ServerCall<ReqT, RespT> {
 
   private void closeInternal(Status status, Metadata trailers) {
     checkState(!closeCalled, "call already closed");
-    try {
-      closeCalled = true;
+    closeCalled = true;
+    closedWithOk = status.isOk();
 
-      if (status.isOk() && method.getType().serverSendsOneMessage() && !messageSent) {
-        handleInternalError(Status.INTERNAL.withDescription(MISSING_RESPONSE).asRuntimeException());
-        return;
-      }
-
-      stream.close(status, trailers);
-    } finally {
-      serverCallTracer.reportCallEnded(status.isOk());
+    if (status.isOk() && method.getType().serverSendsOneMessage() && !messageSent) {
+      handleInternalError(Status.INTERNAL.withDescription(MISSING_RESPONSE).asRuntimeException());
+      return;
     }
+
+    stream.close(status, trailers);
   }
 
   @Override
@@ -284,7 +284,6 @@ final class ServerCallImpl<ReqT, RespT> extends ServerCall<ReqT, RespT> {
         : Status.INTERNAL.withCause(internalError)
             .withDescription("Internal error so cancelling stream.");
     stream.cancel(status);
-    serverCallTracer.reportCallEnded(false); // error so always false
   }
 
   /**
@@ -422,6 +421,9 @@ final class ServerCallImpl<ReqT, RespT> extends ServerCall<ReqT, RespT> {
         // Cancel context after delivering RPC closure notification to allow the application to
         // clean up and update any state based on whether onComplete or onCancel was called.
         context.cancel(cancelCause);
+        // A non-OK status means the RPC did not complete, whatever status the application may
+        // have passed to close().
+        call.serverCallTracer.reportCallEnded(status.isOk() && call.closedWithOk);
       }
     }
 

@@ -145,6 +145,7 @@ public class ServerCallImplTest {
     // end: required boilerplate
 
     call.close(status, new Metadata());
+    new ServerCallImpl.ServerStreamListenerImpl<>(call, callListener, context).closed(Status.OK);
     ServerStats.Builder afterBuilder = new ServerStats.Builder();
     tracer.updateBuilder(afterBuilder);
     ServerStats after = afterBuilder.build();
@@ -154,6 +155,71 @@ public class ServerCallImplTest {
     } else {
       assertEquals(1, after.callsFailed);
     }
+  }
+
+  @Test
+  public void callTracer_clientCancelled_reportsCallFailed() {
+    ServerStreamListenerImpl<Long> streamListener =
+        new ServerCallImpl.ServerStreamListenerImpl<>(call, callListener, context);
+
+    streamListener.closed(Status.CANCELLED);
+
+    ServerStats after = getServerStats(serverCallTracer);
+    assertEquals(1, after.callsStarted);
+    assertEquals(0, after.callsSucceeded);
+    assertEquals(1, after.callsFailed);
+  }
+
+  @Test
+  public void callTracer_clientCancelledThenServerClosed_reportsOnlyOnce() {
+    ServerStreamListenerImpl<Long> streamListener =
+        new ServerCallImpl.ServerStreamListenerImpl<>(call, callListener, context);
+
+    streamListener.closed(Status.CANCELLED);
+    call.sendHeaders(new Metadata());
+    call.sendMessage(123L);
+    call.close(Status.OK, new Metadata());
+
+    ServerStats after = getServerStats(serverCallTracer);
+    assertEquals(1, after.callsStarted);
+    assertEquals(0, after.callsSucceeded);
+    assertEquals(1, after.callsFailed);
+  }
+
+  @Test
+  public void callTracer_serverClosedThenStreamCancelled_reportsCallFailed() {
+    ServerStreamListenerImpl<Long> streamListener =
+        new ServerCallImpl.ServerStreamListenerImpl<>(call, callListener, context);
+
+    call.sendHeaders(new Metadata());
+    call.sendMessage(123L);
+    call.close(Status.OK, new Metadata());
+    streamListener.closed(Status.CANCELLED);
+
+    ServerStats after = getServerStats(serverCallTracer);
+    assertEquals(1, after.callsStarted);
+    assertEquals(0, after.callsSucceeded);
+    assertEquals(1, after.callsFailed);
+  }
+
+  @Test
+  public void callTracer_missingResponse_reportsOnlyFailure() {
+    ServerStreamListenerImpl<Long> streamListener =
+        new ServerCallImpl.ServerStreamListenerImpl<>(call, callListener, context);
+
+    call.close(Status.OK, new Metadata());
+    streamListener.closed(Status.INTERNAL);
+
+    ServerStats after = getServerStats(serverCallTracer);
+    assertEquals(1, after.callsStarted);
+    assertEquals(0, after.callsSucceeded);
+    assertEquals(1, after.callsFailed);
+  }
+
+  private static ServerStats getServerStats(CallTracer tracer) {
+    ServerStats.Builder builder = new ServerStats.Builder();
+    tracer.updateBuilder(builder);
+    return builder.build();
   }
 
   @Test
